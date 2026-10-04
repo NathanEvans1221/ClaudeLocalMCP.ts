@@ -3,15 +3,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { createServer } from "./server.js";
+import { loadConfig } from "./config.js";
 
 async function main() {
-  const server: McpServer = createServer();
+  const server: McpServer = createServer(loadConfig());
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  //console.debug("Weather MCP Server running on stdio");
-  // 👆Claude 報錯 "MCP weather: Unexpected token 'W', "Weather MC"... is not valid JSON"
-  // 👍所以這行 console.debug() 註解掉了就不會報錯了😁
+  // stdout 僅供 MCP 協定使用；診斷訊息應輸出至 stderr。
 }
 
 main().catch((error) => {

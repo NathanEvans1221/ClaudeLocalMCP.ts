@@ -25,7 +25,15 @@ MCP Server 就像「AI 的 USB 插槽」，讓 AI 能安全地連接外部資料
 ```shell
 OPENWEATHERMAP_API_KEY=你的實際API金鑰貼在這裡
 ```
-記得在 dist 內放上 .env 檔案來提供 API金鑰
+將 `.env` 放在專案根目錄，或在 MCP 啟動參數中提供 `.env` 路徑。預設會讀取目前工作目錄下的 `.env`。
+
+```shell
+npm install
+npm run build
+npm test
+```
+
+成功建置後，使用 Claude Desktop 的 `envPath` 參數指定專案根目錄下的 `.env`。
 
 ### 安裝 Claude 桌面版
 https://claude.ai/download
@@ -45,13 +53,15 @@ Windows 用戶請
             "command": "node",
             "args": [
                 "D:\\github\\ClaudeLocalMCP.ts\\dist\\index.js",
-                "envPath=D:\\github\\ClaudeLocalMCP.ts\\.env"
+                "envPath=D:\\github\\chiisen\\ClaudeLocalMCP.ts\\.env"
             ]
         }
     }
 }
 ```
-envPath 是指定 .env 的路徑
+`envPath` 是 `.env` 檔案路徑。路徑中可包含空白或等號。也可以將 `OPENWEATHERMAP_API_KEY` 設為程序環境變數；沒有指定 `envPath` 時，伺服器會讀取工作目錄的 `.env`。
+
+工具名稱為 `get_weather`。英文城市可直接查詢；中文城市會先使用 MyMemory 翻譯。若 MyMemory 額度不足或服務無法連線，請改用英文城市名稱。翻譯與天氣服務各有 10 秒請求期限。
 
 確認一下 MCP 是否正常開啟  
 ![MCP開啟圖示](./images/ClaudeMCP01.png)
@@ -63,4 +73,4 @@ Claude 會要你確認(Allow for this chat)是否可以執行 MCP 服務
 
 ### 查詢 MCP Server 執行 log
 Windows 用戶請  
-開啟目錄 `C:\Users\使用者名稱\AppData\Roaming\Claude\logs`  
+開啟目錄 `C:\Users\使用者名稱\AppData\Roaming\Claude\logs`

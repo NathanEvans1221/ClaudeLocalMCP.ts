@@ -1,184 +1,108 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import axios from "axios"; // 引入 axios
-import dotenv from 'dotenv'; // 引入 dotenv 來讀取 .env 檔案
+import axios from "axios";
+import type { ServerConfig } from "./config.js";
 
-const args = process.argv.slice(2); // 跳過 node 路徑與程式檔案路徑
-const config: Record<string, string> = {};
-
-args.forEach(arg => {
-  const [key, value] = arg.split('=');
-  config[key] = value;
+const REQUEST_TIMEOUT_MS = 10000;
+const CITY_SCHEMA = z.string().trim().min(1, "城市名稱不可為空白").max(200);
+const TRANSLATION_SCHEMA = z.object({
+  responseStatus: z.literal(200),
+  responseData: z.object({ translatedText: CITY_SCHEMA }),
+});
+const WEATHER_SCHEMA = z.object({
+  cod: z.literal(200),
+  name: z.string().min(1),
+  main: z.object({ temp: z.number().finite(), humidity: z.number().min(0).max(100) }),
+  weather: z.array(z.object({ description: z.string().optional() })),
+  wind: z.object({ speed: z.number().nonnegative() }),
+  sys: z.object({ country: z.string().min(1) }),
 });
 
-if (!config.envPath) {
-  console.error("envPath is missing. Please set envPath in command line.");
-  throw new Error("Server configuration error: Missing envPath.");
-  // 或者拋出錯誤: throw new Error("Server configuration error: Missing API key.");
-}
-
-
-// 在程式碼開頭載入環境變數並指定 .env 檔案的路徑
-const dotenvResult = dotenv.config({ path: config.envPath });
-
-// 檢查 dotenv 是否載入 .env 檔案失敗
-if (dotenvResult.error) {
-  // 取得 dotenv 開始搜尋的目前工作目錄
-  const currentWorkingDirectory = process.cwd();
-  // 印出警告訊息，指出它在哪裡尋找 .env 檔案
-  console.warn(`[dotenv] 警告：找不到或無法載入 .env 檔案。搜尋起始目錄：${currentWorkingDirectory}`);
-  // 可選：您也可以記錄 dotenv 的具體錯誤以獲取更多詳細資訊：
-  // console.warn(`[dotenv] 錯誤詳細資訊：${dotenvResult.error.message}`);
-} else {
-  // 可選：如果找到檔案但可能是空的，則記錄日誌
-  if (!dotenvResult.parsed || Object.keys(dotenvResult.parsed).length === 0) {
-    console.warn(`[dotenv] 注意：找到 .env 檔案，但它是空的或不包含任何變數。`);
-  } else {
-    // 可選：如果需要除錯，則記錄成功訊息
-    // console.log(`[dotenv] 成功載入 .env 檔案。`);
+async function fetchData(url: string, params: Record<string, string>, service: string): Promise<unknown> {
+  try {
+    const response = await axios.get<unknown>(url, {
+      params,
+      timeout: REQUEST_TIMEOUT_MS,
+      // 同時限制連線建立與回應的總等待時間。
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    return response.data;
+  } catch (error: unknown) {
+    // 不回傳原始 Axios 訊息或設定，避免 URL 中的 API Key 外洩。
+    if (axios.isAxiosError(error)) {
+      if (["ECONNABORTED", "ETIMEDOUT", "ERR_CANCELED"].includes(error.code ?? "")) {
+        throw new Error(service + "請求逾時，請稍後重試。");
+      }
+      switch (error.response?.status) {
+        case 401:
+          throw new Error(service + "授權失敗，請檢查 API 金鑰。");
+        case 404:
+          throw new Error(service + "找不到指定城市。");
+        case 429:
+          throw new Error(service + "請求頻率或額度已超過限制，請稍後重試。");
+        default:
+          if (error.response) {
+            throw new Error(service + "回應錯誤（HTTP " + error.response.status + "）。");
+          }
+      }
+    }
+    throw new Error(service + "連線失敗，請稍後重試。");
   }
 }
 
-// 從環境變數讀取 API 金鑰
-const OPENWEATHERMAP_API_KEY = process.env.OPENWEATHERMAP_API_KEY;
+async function translateToEnglish(city: string): Promise<string> {
+  if (/^[\x20-\x7E]+$/.test(city)) {
+    return city;
+  }
+  const result = TRANSLATION_SCHEMA.safeParse(await fetchData(
+    "https://api.mymemory.translated.net/get",
+    { q: city, langpair: "zh-TW|en" },
+    "翻譯服務",
+  ));
+  if (!result.success) {
+    throw new Error("翻譯服務回應格式或狀態異常，請稍後重試，或使用英文城市名稱。");
+  }
+  return result.data.responseData.translatedText;
+}
 
-export function createServer(): McpServer {
+export function createServer(config: ServerConfig): McpServer {
   const server = new McpServer({
-    name: "Real Weather MCP Server", // 可以改個名字
+    name: "Real Weather MCP Server",
     version: "0.1.2",
   });
-
-  async function translateToEnglish(text: string): Promise<string> {
-    // console.warn(`Translation function called for "${text}". Placeholder returns original text. Implement actual translation.`);
-
-    const langPair = "zh-TW|en"; // 從繁體中文翻譯成英文
-    const apiUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${langPair}`;
-
-    try {
-      // 將 console.log 改為 console.error 或 console.debug，或者直接註解掉
-      // console.log(`嘗試使用 MyMemory 將 "${text}" 翻譯成英文...`);
-      console.error(`[DEBUG] 嘗試使用 MyMemory 將 "${text}" 翻譯成英文...`); // 使用 console.error 輸出到 stderr
-      const response = await axios.get(apiUrl);
-
-      if (response.data && response.data.responseData && response.data.responseData.translatedText) {
-        const translatedText = response.data.responseData.translatedText;
-        // 將 console.log 改為 console.error 或 console.debug，或者直接註解掉
-        // console.log(`翻譯成功: "${text}" -> "${translatedText}"`);
-        console.error(`[DEBUG] 翻譯成功: "${text}" -> "${translatedText}"`); // 使用 console.error 輸出到 stderr
-        if (translatedText && translatedText.toLowerCase() !== text.toLowerCase()) {
-          return translatedText;
-        } else {
-          console.warn(`翻譯 API 為 "${text}" 返回了原文或空值。使用原文。`);
-          return text;
-        }
-      } else {
-        console.error("翻譯失敗：MyMemory API 返回了非預期的回應格式。", response.data);
-        throw new Error("無法解析翻譯回應。");
-      }
-    } catch (error: any) {
-      console.error(`翻譯 API 呼叫失敗，針對 "${text}":`, error.message);
-      if (axios.isAxiosError(error) && error.response) {
-        console.error("翻譯 API 回應狀態:", error.response.status);
-        console.error("翻譯 API 回應資料:", error.response.data);
-      }
-      throw new Error(`無法翻譯城市名稱 "${text}"。`);
-    }
-  }
 
   server.tool(
     "get_weather",
     {
-      city: z.string().describe("The name of the city. This will be translated to English before querying the weather service."),
+      city: CITY_SCHEMA.describe("城市名稱，可附國家代碼（例如 Taichung,TW）；英文直接查詢，中文先翻譯成英文。"),
     },
     async ({ city }) => {
-      // ... (檢查 API 金鑰和 city 的程式碼) ...
-
-      let cityInEnglish: string;
       try {
-        cityInEnglish = await translateToEnglish(city);
-        // 確保這裡也沒有 console.log
-        // console.log(`Original city: "${city}", Translated (or placeholder) city: "${cityInEnglish}"`);
-        console.error(`[DEBUG] Original city: "${city}", Translated city: "${cityInEnglish}"`); // 使用 console.error
-      } catch (translationError: any) {
-        // 這裡的 console.error 是安全的，因為它輸出到 stderr
-        console.error("Translation error:", translationError.message);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ error: `Failed to translate city name "${city}": ${translationError.message}` }, null, 2),
-            },
-          ],
-        };
-      }
-
-
-      const units = "metric"; // 使用攝氏溫度
-      // OpenWeatherMap API might support language codes for response data,
-      // but the query parameter 'q' generally works best with English city names.
-      // const lang = "zh_tw"; // Keep for response language if desired, but query uses English name.
-      const apiUrl = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(cityInEnglish)}&appid=${OPENWEATHERMAP_API_KEY}&units=${units}`; // Removed lang=zh_tw from query for potentially better matching with English city name
-
-      try {
-        const response = await axios.get(apiUrl);
-
-        // 檢查 OpenWeatherMap 是否成功找到城市
-        if (response.status !== 200 || response.data.cod !== 200) {
-          const errorMessage = response.data.message || `Could not find weather data for ${cityInEnglish} (Original: ${city}). Status: ${response.status}`;
-          console.error("OpenWeatherMap API Error:", errorMessage, response.data);
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({ error: errorMessage }, null, 2),
-              },
-            ],
-          };
+        const cityInEnglish = await translateToEnglish(city);
+        const result = WEATHER_SCHEMA.safeParse(await fetchData(
+          "https://api.openweathermap.org/data/2.5/weather",
+          { q: cityInEnglish, appid: config.apiKey, units: "metric" },
+          "天氣服務",
+        ));
+        if (!result.success) {
+          throw new Error("天氣服務回應格式或狀態異常，請稍後重試。");
         }
-
-        const data = response.data;
-
-        // 從 API 回應中提取需要的資訊
+        const data = result.data;
         const weather = {
-          city: data.name, // 使用 API 回傳的標準化城市名稱
+          city: data.name,
           temperature: data.main.temp,
-          condition: data.weather[0]?.description || "N/A", // 天氣描述
-          humidity: data.main.humidity, // 濕度
-          wind_speed: data.wind.speed, // 風速 (m/s)
-          country: data.sys.country, // 國家代碼
+          condition: data.weather[0]?.description || "N/A",
+          humidity: data.main.humidity,
+          wind_speed: data.wind.speed,
+          country: data.sys.country,
         };
-
+        return { content: [{ type: "text", text: JSON.stringify(weather, null, 2) }] };
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "天氣查詢失敗，請稍後重試。";
+        console.error("[get_weather] " + message);
         return {
-          content: [
-            {
-              type: "text",
-              // 將實際天氣資訊轉換成 JSON 字串回傳
-              text: JSON.stringify(weather, null, 2),
-            },
-          ],
-        };
-      } catch (error: any) {
-        console.error(`Error fetching weather data for ${cityInEnglish} (Original: ${city}):`, error.message);
-        let errorMessage = `Failed to fetch weather data for ${cityInEnglish} (Original: ${city}).`;
-        if (axios.isAxiosError(error) && error.response) {
-          console.error("API Response Error:", error.response.status, error.response.data);
-          errorMessage = `Error from weather service for ${cityInEnglish}: ${error.response.data?.message || error.response.statusText || 'Unknown API error'}`;
-          if (error.response.status === 404) {
-            errorMessage = `Could not find the city: ${cityInEnglish} (Original: ${city})`;
-          } else if (error.response.status === 401) {
-            errorMessage = `Invalid API key or unauthorized request.`;
-          }
-        } else if (error instanceof Error) {
-          errorMessage = error.message;
-        }
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ error: errorMessage }, null, 2),
-            },
-          ],
+          isError: true,
+          content: [{ type: "text", text: JSON.stringify({ error: message }, null, 2) }],
         };
       }
     },
